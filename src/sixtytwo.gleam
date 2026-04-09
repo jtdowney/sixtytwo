@@ -15,7 +15,6 @@
 
 import gleam/bit_array
 import gleam/bool
-import gleam/dict.{type Dict}
 import gleam/list
 import gleam/result
 import gleam/string
@@ -30,14 +29,13 @@ pub fn encode(input: BitArray) -> String {
   use <- bool.guard(when: bit_array.byte_size(input) == 0, return: "")
   let leading_zeros = count_leading_zeros(input, 0)
   let prefix = string.repeat("0", leading_zeros)
-  let encode_map = build_encode_map()
 
   let digits = bytes_to_base_digits(input, [])
   case digits {
     [] -> prefix
     _ -> {
       let encoded =
-        list.map(digits, lookup_char(encode_map, _))
+        list.map(digits, index_to_char)
         |> string.concat
       prefix <> encoded
     }
@@ -47,9 +45,8 @@ pub fn encode(input: BitArray) -> String {
 /// Decode a base62 string. Returns `Error(Nil)` on invalid input.
 pub fn decode(input: String) -> Result(BitArray, Nil) {
   use <- bool.guard(when: input == "", return: Ok(<<>>))
-  let decode_map = build_decode_map()
   let chars = string.to_graphemes(input)
-  use values <- result.try(list.try_map(chars, dict.get(decode_map, _)))
+  use values <- result.try(list.try_map(chars, char_to_value))
   let leading_zeros = count_leading_zero_values(values)
   let bytes = base_digits_to_bytes(values)
 
@@ -76,20 +73,24 @@ fn count_leading_zero_values(values: List(Int)) -> Int {
   }
 }
 
-fn build_encode_map() -> Dict(Int, String) {
-  string.to_graphemes(alphabet)
-  |> list.index_map(fn(char, index) { #(index, char) })
-  |> dict.from_list
+fn index_to_char(index: Int) -> String {
+  string.slice(alphabet, index, 1)
 }
 
-fn lookup_char(encode_map: Dict(Int, String), index: Int) -> String {
-  dict.get(encode_map, index) |> result.unwrap("")
+fn char_to_value(char: String) -> Result(Int, Nil) {
+  case string.to_utf_codepoints(char) {
+    [cp] -> codepoint_to_index(string.utf_codepoint_to_int(cp))
+    _ -> Error(Nil)
+  }
 }
 
-fn build_decode_map() -> Dict(String, Int) {
-  string.to_graphemes(alphabet)
-  |> list.index_map(fn(char, index) { #(char, index) })
-  |> dict.from_list
+fn codepoint_to_index(code: Int) -> Result(Int, Nil) {
+  case code {
+    c if c >= 48 && c <= 57 -> Ok(c - 48)
+    c if c >= 65 && c <= 90 -> Ok(c - 65 + 10)
+    c if c >= 97 && c <= 122 -> Ok(c - 97 + 36)
+    _ -> Error(Nil)
+  }
 }
 
 fn bytes_to_base_digits(input: BitArray, digits: List(Int)) -> List(Int) {
@@ -114,27 +115,26 @@ fn multiply_and_add(
   addend: Int,
   digit_base: Int,
 ) -> List(Int) {
-  let reversed = list.reverse(digits)
-  do_multiply_and_add(reversed, multiplier, addend, digit_base, [])
+  let #(result, carry) =
+    do_multiply_and_add(digits, multiplier, addend, digit_base)
+  emit_carry(carry, digit_base, result)
 }
 
 fn do_multiply_and_add(
-  reversed_digits: List(Int),
+  digits: List(Int),
   multiplier: Int,
-  carry: Int,
+  addend: Int,
   digit_base: Int,
-  acc: List(Int),
-) -> List(Int) {
-  case reversed_digits {
-    [] -> emit_carry(carry, digit_base, acc)
+) -> #(List(Int), Int) {
+  case digits {
+    [] -> #([], addend)
     [digit, ..rest] -> {
+      let #(processed_rest, carry) =
+        do_multiply_and_add(rest, multiplier, addend, digit_base)
       let value = digit * multiplier + carry
       let new_digit = value % digit_base
       let new_carry = value / digit_base
-      do_multiply_and_add(rest, multiplier, new_carry, digit_base, [
-        new_digit,
-        ..acc
-      ])
+      #([new_digit, ..processed_rest], new_carry)
     }
   }
 }
